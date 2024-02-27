@@ -1,15 +1,22 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, UploadFile, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse
 from tempfile import NamedTemporaryFile
 import whisper
 import torch
+from pydub import AudioSegment
+from pydub.utils import mediainfo
 from typing import List
+import io
+import requests
 
+# Checking if NVIDIA GPU is available
 torch.cuda.is_available()
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+# Load the Whisper model:
 model = whisper.load_model("base", device=DEVICE)
 
+# Keywords for fraud detection
 keywords = [
     'Global',
     'HANA',
@@ -27,36 +34,25 @@ def detect_fraud(text):
         return False, []
 
 @app.post("/whisper/")
-async def handler(files: List[UploadFile] = File(...)):
-    if not files:
-        raise HTTPException(status_code=400, detail="No files were provided")
+async def handler(file: UploadFile = UploadFile(...)):
+    # Read the audio file
+    audio_data = await file.read()
 
-    # For each file, let's store the results in a list of dictionaries.
-    results = []
+    # Convert audio to wav format
+    audio = AudioSegment.from_file(io.BytesIO(audio_data))
+    audio.export("temp.wav", format="wav")
 
-    for file in files:
-        # Create a temporary file.
-        with NamedTemporaryFile(delete=True) as temp:
-            # Write the user's uploaded file to the temporary file.
-            with open(temp.name, "wb") as temp_file:
-                temp_file.write(file.file.read())
-            
-            # Let's get the transcript of the temporary file.
-            result = model.transcribe(temp.name)
+    # Transcribe audio
+    result = model.transcribe("temp.wav")
 
-            # Detect fraud in the transcript
-            is_fraud, detected_keywords = detect_fraud(result['text'])
+    # Detect fraud in the transcript
+    is_fraud, detected_keywords = detect_fraud(result['text'])
 
-            # Now we can store the result object for this file.
-            results.append({
-                'filename': file.filename,
-                'transcript': result['text'],
-                'fraud_detected': is_fraud,
-                'detected_keywords': detected_keywords
-            })
-
-    return JSONResponse(content={'results': results})
-
+    return JSONResponse(content={
+        'transcript': result['text'],
+        'fraud_detected': is_fraud,
+        'detected_keywords': detected_keywords
+    })
 
 @app.get("/", response_class=RedirectResponse)
 async def redirect_to_docs():
